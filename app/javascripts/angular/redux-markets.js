@@ -121,7 +121,7 @@ angular.module('predictionMarketApp')
       $log.debug('addMarket simulation result:', simulationRes, '- estimated gas:', estimatedGas)
       if (simulationRes === false)
         throw new Error( 'Publish error, failed call simulation')
-      let txid = yield effects.call([marketsIndex, addMarket], ...callArgs)
+      let txid = yield effects.call([addMarket, addMarket.sendTransaction], ...callArgs)
       let transaction = yield effects.cps(web3.eth.getTransaction, txid)
       $log.info('MarketsIndex.addMarket() txid:', txid)
       yield effects.put({type: 'SET_BROADCASTED_TXID', txid, transaction})
@@ -177,9 +177,14 @@ angular.module('predictionMarketApp')
 
   function* updateMarketsDetails(addressList) {
     function* doPage(list) {
-      let details = yield list.map(addr => loadMarketData(addr))
-      for (let marketDetails of details)
-        yield effects.put({type: 'SET_MARKET_DETAILS', marketDetails})
+      try {
+        let details = yield list.map(addr => loadMarketData(addr))
+        for (let marketDetails of details)
+          yield effects.put({type: 'SET_MARKET_DETAILS', marketDetails})
+      } catch (error) {
+        $log.error(error)
+        yield effects.put({type: 'ERR_INTERNAL', error})
+      }
     }
     let pageSize = 3
     let page = []
@@ -194,44 +199,108 @@ angular.module('predictionMarketApp')
     $rootScope.$emit('market-list-updated')  //TODO: remove
   }
 
-
-  function* fetchContractData(contract, fields) {
-    let values = yield fields.map(f => effects.call([contract[f], contract[f].call]))
-    data = {}
-    values.forEach((v,i) => {
-      data[fields[i]] = v
+  function secure(obj, method, ...args) {
+    return new Promise(function(resolve, reject) {
+      try {
+        obj[method](...args).then(resolve).catch(reject)
+      } catch (error) {
+        reject(error)
+      }
     })
-    return data
   }
 
-  function* loadMarketData(address) {
-    if (!address) throw new Error('Missing market address')
-    var marketData = { address }
-    let data = yield fetchContractData(PredictionMarket.at(address), [
-      'question',
-      'expiration',
-      'responder',
-      'owner',
-      'yes',
-      'no',
-      'payout',
-      'feeRate',
-      'getYesPrice',
-      'getNoPrice',
-      'prizePool',
-      'totalFees',
-      'getVerdict',
-    ])
-    Object.assign(marketData, data)
-    let supply = yield [
-      effects.call(AnswerToken.at(marketData.yes).totalSupply.call),
-      effects.call(AnswerToken.at(marketData.no).totalSupply.call),
-    ]
-    Object.assign(marketData, {
-      yesTotalBids: supply[0],
-      noTotalBids: supply[1],
+  function secure2(obj, method, ...args) {
+    return new Promise(function(resolve, reject) {
+      try {
+        obj[method](...args, function(e,v) {
+          if (e) reject(e)
+          else resolve(v)
+        })
+      } catch (error) {
+        reject(error)
+      }
     })
-    return marketData
+  }
+
+  function* fetchContractData(contract, fields) {
+    // let values = yield fields.map(f => effects.call([contract[f], contract[f].call]))
+    try {
+      // let calls = fields.map(f => contract[f].call())
+      // let values = yield calls
+      // use original web3 function for a bug on ether-pudding with a contract initialized with a wrong address
+      contract = contract.contract
+      data = {}
+      for (let i=0; i<fields.length; i++) {
+        let f = fields[i]
+        // data[f] = yield effects.cps([contract[f], contract[f].call])
+        // data[f] = yield contract[f].call()
+        // data[f] = yield secure2((cb)=>contract[f].call(cb))
+        // data[f] = yield secure2(contract[f], 'call')
+        contract[f].call((e,v) => {
+          console.log(e,v)
+        })
+      }
+      // values.forEach((v,i) => {
+        // data[fields[i]] = v
+      // })
+      return data
+    } catch (error) {
+      $log.error(error)
+      yield effects.put({type: 'ERR_INTERNAL', error})
+    }
+  }
+
+
+
+  // function* fetchContractData(contract, fields) {
+  //   try {
+  //     // use secure() for a bug on web3 with a contract initialized with a wrong address
+  //     // let values = yield fields.map(f => effects.call([contract[f], contract[f].call]))
+  //     let values = yield fields.map(f => secure(()=>contract[f].call()))
+  //     data = {}
+  //     values.forEach((v,i) => {
+  //       data[fields[i]] = v
+  //     })
+  //     return data
+  //   } catch (error) {
+  //     $log.error(error)
+  //     yield effects.put({type: 'ERR_INTERNAL', error})
+  //   }
+  // }
+
+  function* loadMarketData(address) {
+    try {
+      if (!address) throw new Error('Missing market address')
+      var marketData = { address }
+      let data = yield fetchContractData(PredictionMarket.at(address), [
+        'question',
+        'expiration',
+        'responder',
+        'owner',
+        'yes',
+        'no',
+        'payout',
+        'feeRate',
+        'getYesPrice',
+        'getNoPrice',
+        'prizePool',
+        'totalFees',
+        'getVerdict',
+      ])
+      Object.assign(marketData, data)
+      let supply = yield [
+        AnswerToken.at(marketData.yes).totalSupply.call(),
+        AnswerToken.at(marketData.no).totalSupply.call(),
+      ]
+      Object.assign(marketData, {
+        yesTotalBids: supply[0],
+        noTotalBids: supply[1],
+      })
+      return marketData
+    } catch (error) {
+      $log.error(error)
+      yield effects.put({type: 'ERR_INTERNAL', error})
+    }
   }
 
 
